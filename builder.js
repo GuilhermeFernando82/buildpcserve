@@ -20,6 +20,18 @@ function detectCpuBrand(name) {
   return null;
 }
 
+// Marca do CHIP gráfico da GPU — cuidado pra não confundir com a marca do
+// fabricante da placa (ex.: "Placa de Vídeo ASUS ... AMD Radeon RX..." é
+// AMD mesmo com "ASUS" no nome). "nvidia"/"geforce"/"rtx"/"gtx" indicam
+// NVIDIA; "amd"/"radeon"/"rx" (fora de contexto Intel) indicam AMD.
+function detectGpuBrand(name) {
+  const n = name.toLowerCase();
+  if (/nvidia|geforce|\brtx\b|\bgtx\b/.test(n)) return "nvidia";
+  if (/\bamd\b|radeon|\brx\s?\d/.test(n)) return "amd";
+  if (/\bintel\b|\barc\b/.test(n)) return "intel";
+  return null;
+}
+
 // Socket é mais específico que marca: gerações recentes da Intel trocaram de
 // soquete (ex.: Core Ultra 200 é LGA1851, incompatível com placas LGA1700).
 function detectSocket(name) {
@@ -340,7 +352,8 @@ function nextPricier(sorted, current, maxPrice) {
   return candidate.price <= maxPrice ? candidate : null;
 }
 
-function buildConfiguration(budget, categoryResults) {
+function buildConfiguration(budget, categoryResults, options = {}) {
+  const { gpuBrand = null } = options; // "nvidia" | "amd" | null (qualquer)
   const rawByKey = {};
   const pctByKey = {};
   const labelByKey = {};
@@ -435,6 +448,14 @@ function buildConfiguration(budget, categoryResults) {
     if (cat.key === "storage") {
       candidates = computeStorageCandidates(candidates, warnings);
     }
+    if (cat.key === "gpu" && gpuBrand) {
+      candidates = filterWithFallback(
+        candidates,
+        (p) => detectGpuBrand(p.name) === gpuBrand,
+        warnings,
+        `Não encontramos placa de vídeo ${gpuBrand === "nvidia" ? "NVIDIA" : "AMD"} disponível agora; exibindo outras marcas.`
+      );
+    }
     const sorted = [...candidates].sort((a, b) => a.price - b.price);
     setCategory(cat.key, sorted);
 
@@ -519,8 +540,20 @@ function buildConfiguration(budget, categoryResults) {
         }
         const better = nextPricier(sortedByCategory[cat.key], selection[cat.key], maxPrice);
         if (better) {
+          // Trocar CPU/GPU pode inflar categorias dependentes em cascata
+          // (ex.: GPU mais forte -> fonte precisa de mais watts -> fonte
+          // mais cara), o que às vezes estoura o orçamento mesmo a troca
+          // direta cabendo no `room` calculado. Se acontecer, desfaz só
+          // essa troca (não a categoria toda) e segue tentando as outras —
+          // em vez de deixar a sobra "presa" só porque uma tentativa específica
+          // não coube.
+          const before = selection[cat.key];
           applySwap(cat.key, better);
-          upgraded = true;
+          if (total() > budget) {
+            applySwap(cat.key, before);
+          } else {
+            upgraded = true;
+          }
         }
       }
       if (!upgraded) break;

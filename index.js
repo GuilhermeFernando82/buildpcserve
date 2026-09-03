@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 
-const categories = require("./categories");
+const { getCategories } = require("./categories");
 const { fetchFromAllStores } = require("./stores");
 const { buildConfiguration } = require("./builder");
 const { CATEGORY_NAME_FILTERS, filterByCategory } = require("./categoryFilters");
@@ -22,6 +22,9 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/build", async (req, res) => {
   const budget = Number(req.query.budget);
+  const profile = req.query.profile === "balanced" ? "balanced" : "gpu";
+  const gpuBrandRaw = String(req.query.gpuBrand || "").toLowerCase();
+  const gpuBrand = ["nvidia", "amd"].includes(gpuBrandRaw) ? gpuBrandRaw : null;
 
   if (!Number.isFinite(budget) || budget < 500 || budget > 200000) {
     return res.status(400).json({
@@ -29,11 +32,18 @@ app.get("/api/build", async (req, res) => {
     });
   }
 
+  const categories = getCategories(profile);
+
   const results = await Promise.all(
     categories.map(async (cat) => {
       try {
         const { products, failedStores } = await fetchFromAllStores(cat.term);
-        return { ...cat, products, failedStores };
+        // Mesmo filtro por nome do /api/search: a busca por "processador"
+        // também traz cooler de processador, "fonte" traz cabo, etc. Sem
+        // isso o algoritmo podia escolher um acessório pensando que era o
+        // componente em si.
+        const filtered = filterByCategory(products, cat.key);
+        return { ...cat, products: filtered.length ? filtered : products, failedStores };
       } catch (err) {
         console.error(`Erro ao buscar "${cat.label}" (${cat.term}):`, err.message);
         return { ...cat, products: [], failedStores: [] };
@@ -49,7 +59,7 @@ app.get("/api/build", async (req, res) => {
     ...new Set(results.flatMap((r) => r.failedStores || [])),
   ];
 
-  const { items, total, warnings } = buildConfiguration(budget, results);
+  const { items, total, warnings } = buildConfiguration(budget, results, { gpuBrand });
 
   if (items.every((i) => !i.product)) {
     return res.status(502).json({
@@ -60,6 +70,8 @@ app.get("/api/build", async (req, res) => {
 
   res.json({
     budget,
+    profile,
+    gpuBrand,
     total,
     remaining: budget - total,
     items,
