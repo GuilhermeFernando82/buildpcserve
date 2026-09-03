@@ -4,6 +4,7 @@ const cors = require("cors");
 const categories = require("./categories");
 const { fetchFromAllStores } = require("./stores");
 const { buildConfiguration } = require("./builder");
+const { CATEGORY_NAME_FILTERS, filterByCategory } = require("./categoryFilters");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -71,6 +72,7 @@ app.get("/api/build", async (req, res) => {
 
 app.get("/api/search", async (req, res) => {
   const q = String(req.query.q || "").trim();
+  const category = String(req.query.category || "").trim();
 
   if (!q) {
     return res.status(400).json({ error: "Informe um termo de busca." });
@@ -78,11 +80,22 @@ app.get("/api/search", async (req, res) => {
   if (q.length > 100) {
     return res.status(400).json({ error: "Termo de busca muito longo." });
   }
+  if (category && !CATEGORY_NAME_FILTERS[category]) {
+    return res.status(400).json({ error: "Categoria desconhecida." });
+  }
 
   try {
     const { products, failedStores } = await fetchFromAllStores(q);
-    products.sort((a, b) => a.price - b.price);
-    res.json({ products, failedStores });
+
+    // Filtra pra categoria pedida (ex.: busca de "processador" não deve
+    // trazer cooler de processador). Se o filtro zerar tudo — termo digitado
+    // não bate com o padrão de nome esperado pra essa categoria — melhor
+    // mostrar os resultados sem filtro do que uma lista vazia.
+    const filtered = category ? filterByCategory(products, category) : products;
+    const result = filtered.length ? filtered : products;
+
+    result.sort((a, b) => a.price - b.price);
+    res.json({ products: result, failedStores });
   } catch (err) {
     console.error(`Erro ao buscar "${q}":`, err.message);
     res.status(502).json({
