@@ -6,7 +6,7 @@ const { fetchFromAllStores } = require("./stores");
 const { buildConfiguration } = require("./builder");
 const { CATEGORY_NAME_FILTERS, filterByCategory, filterByRelevance } = require("./categoryFilters");
 const { recordSnapshot, getHistory } = require("./priceHistory");
-const { ensureSchema } = require("./db");
+const { ensureSchema, pool } = require("./db");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -19,7 +19,7 @@ app.use(cors(corsOrigin ? { origin: corsOrigin.split(",") } : {}));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, priceHistoryStorage: pool ? "postgres" : "memory" });
 });
 
 app.get("/api/build", async (req, res) => {
