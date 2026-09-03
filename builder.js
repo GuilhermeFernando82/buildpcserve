@@ -204,6 +204,36 @@ function computeMotherboardCandidates(raw, cpuProduct, warnings) {
   return raw;
 }
 
+function extractRamCapacityGb(name) {
+  const m = name.match(/(\d{1,3})\s?GB/i);
+  return m ? Number(m[1]) : null;
+}
+
+const MIN_RAM_GB = 16;
+const MAX_RAM_STICKS = 4;
+
+// Embrulha um anúncio de RAM num "pacote": quantas unidades dele (1 a 4)
+// são necessárias pra bater os 16GB mínimos, com o preço já multiplicado
+// pela quantidade. Isso deixa o resto do algoritmo (que só entende "escolha
+// 1 item pelo preço") funcionar sem mudança nenhuma — ele passa a comparar
+// pacotes de RAM pelo preço total, do mesmo jeito que compara qualquer
+// outra categoria.
+function toRamPackage(p, quantity) {
+  const gbEach = extractRamCapacityGb(p.name);
+  const totalGb = gbEach ? gbEach * quantity : null;
+  return {
+    ...p,
+    id: `${p.id}:x${quantity}`,
+    price: p.price * quantity,
+    unitPrice: p.price,
+    quantity,
+    name:
+      quantity > 1
+        ? `${quantity}x ${p.name}${totalGb ? ` — total ${totalGb}GB` : ""}`
+        : p.name,
+  };
+}
+
 function computeRamCandidates(raw, motherboardProduct, warnings) {
   // A categoria mistura pentes de notebook (SO-DIMM) com os de desktop
   // (DIMM); só os de desktop encaixam na placa-mãe escolhida.
@@ -225,7 +255,27 @@ function computeRamCandidates(raw, motherboardProduct, warnings) {
       );
     }
   }
-  return candidates;
+
+  // Monta pacotes de 1 a 4 pentes iguais até fechar pelo menos 16GB.
+  // Anúncios sem capacidade reconhecível, ou que precisariam de mais de 4
+  // pentes pra chegar lá, ficam de fora.
+  const packages = [];
+  for (const p of candidates) {
+    const gbEach = extractRamCapacityGb(p.name);
+    if (!gbEach) continue;
+    const quantity = Math.ceil(MIN_RAM_GB / gbEach);
+    if (quantity > MAX_RAM_STICKS) continue;
+    packages.push(toRamPackage(p, quantity));
+  }
+
+  if (!packages.length) {
+    warnings.push(
+      "Não encontramos memória RAM que alcance 16GB com até 4 pentes; exibindo opções abaixo de 16GB."
+    );
+    return candidates.map((p) => toRamPackage(p, 1));
+  }
+
+  return packages;
 }
 
 function computePsuCandidates(raw, gpuProduct, cpuProduct, warnings) {
