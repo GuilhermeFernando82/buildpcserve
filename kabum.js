@@ -3,6 +3,11 @@ const axios = require("axios");
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
 const cache = new Map(); // term -> { expires, products }
 
+// A Kabum pagina em blocos de 60. Busca até esse tanto de páginas em
+// paralelo pra trazer o máximo de resultados sem sair buscando páginas
+// infinitas em termos muito genéricos.
+const MAX_PAGES = 10;
+
 const client = axios.create({
   timeout: 20000,
   maxRedirects: 5,
@@ -51,7 +56,9 @@ function findMatchingBracket(str, openIdx) {
 // - Busca livre sem categoria correspondente: fica em /busca/<termo> e
 //   embute os produtos como JSON já estruturado em
 //   pageProps.data.catalogServer.data (array pronto).
-// As duas variantes usam os mesmos campos por produto.
+// As duas variantes usam os mesmos campos por produto e paginam com o
+// mesmo query param `page_number`, e ambas expõem `totalPagesCount` (só que
+// uma como número de verdade, outra dentro da string serializada).
 function extractRawProducts(nextData) {
   const payload = nextData?.props?.pageProps?.data;
 
@@ -62,8 +69,7 @@ function extractRawProducts(nextData) {
   if (typeof payload === "string") {
     const marker = '"data":[{"code":';
     const markerIdx = payload.indexOf(marker);
-    if (markerIdx === -1) return []; // categoria sem resultados
-
+    if (markerIdx === -1) return []; // sem resultados
     const arrStart = markerIdx + '"data":'.length; // aponta para o '['
     const arrEnd = findMatchingBracket(payload, arrStart);
     if (arrEnd === -1) {
@@ -75,18 +81,28 @@ function extractRawProducts(nextData) {
   throw new Error("Formato inesperado de pageProps.data");
 }
 
-function extractProductsFromHtml(html) {
-  const scriptMatch = html.match(
-    /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/
-  );
-  if (!scriptMatch) {
-    throw new Error("__NEXT_DATA__ não encontrado na página");
+function extractTotalPages(nextData) {
+  const payload = nextData?.props?.pageProps?.data;
+
+  const metaCount = payload?.catalogServer?.meta?.totalPagesCount;
+  if (Number.isFinite(metaCount)) return metaCount;
+
+  if (typeof payload === "string") {
+    const m = payload.match(/"totalPagesCount":(\d+)/);
+    if (m) return Number(m[1]);
   }
 
-  const nextData = JSON.parse(scriptMatch[1]);
-  const rawProducts = extractRawProducts(nextData);
+  return 1;
+}
 
-  return rawProducts
+function mapProducts(rawProducts) {
+  const byCode = new Map();
+  for (const p of rawProducts) {
+    if (byCode.has(p.code)) continue; // páginas não deveriam se sobrepor, mas por garantia
+    byCode.set(p.code, p);
+  }
+
+  return [...byCode.values()]
     .map((p) => {
       const price = p.priceWithDiscount > 0 ? p.priceWithDiscount : p.price;
       return {
@@ -105,21 +121,52 @@ function extractProductsFromHtml(html) {
     .filter((p) => p.available && p.price > 0);
 }
 
+async function fetchPage(term, pageNumber) {
+  const url = `https://www.kabum.com.br/busca/${encodeURIComponent(term)}${
+    pageNumber > 1 ? `?page_number=${pageNumber}` : ""
+  }`;
+  const response = await client.get(url);
+
+  if (response.status !== 200 || typeof response.data !== "string") {
+    throw new Error(
+      `Falha ao buscar "${term}" página ${pageNumber} (status ${response.status})`
+    );
+  }
+
+  const scriptMatch = response.data.match(
+    /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/
+  );
+  if (!scriptMatch) {
+    throw new Error("__NEXT_DATA__ não encontrado na página");
+  }
+
+  const nextData = JSON.parse(scriptMatch[1]);
+  return {
+    raw: extractRawProducts(nextData),
+    totalPages: extractTotalPages(nextData),
+  };
+}
+
 async function fetchCategoryProducts(term) {
   const cached = cache.get(term);
   if (cached && cached.expires > Date.now()) {
     return cached.products;
   }
 
-  const response = await client.get(
-    `https://www.kabum.com.br/busca/${encodeURIComponent(term)}`
-  );
+  const first = await fetchPage(term, 1);
+  const pagesToFetch = Math.min(first.totalPages, MAX_PAGES);
 
-  if (response.status !== 200 || typeof response.data !== "string") {
-    throw new Error(`Falha ao buscar categoria "${term}" (status ${response.status})`);
+  let allRaw = first.raw;
+  if (pagesToFetch > 1) {
+    const rest = await Promise.all(
+      Array.from({ length: pagesToFetch - 1 }, (_, i) =>
+        fetchPage(term, i + 2).catch(() => ({ raw: [] })) // uma página falhando não derruba as outras
+      )
+    );
+    for (const r of rest) allRaw = allRaw.concat(r.raw);
   }
 
-  const products = extractProductsFromHtml(response.data);
+  const products = mapProducts(allRaw);
   cache.set(term, { products, expires: Date.now() + CACHE_TTL_MS });
   return products;
 }

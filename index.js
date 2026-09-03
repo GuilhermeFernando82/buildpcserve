@@ -82,7 +82,7 @@ app.get("/api/search", async (req, res) => {
   try {
     const { products, failedStores } = await fetchFromAllStores(q);
     products.sort((a, b) => a.price - b.price);
-    res.json({ products: products.slice(0, 60), failedStores });
+    res.json({ products, failedStores });
   } catch (err) {
     console.error(`Erro ao buscar "${q}":`, err.message);
     res.status(502).json({
