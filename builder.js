@@ -133,18 +133,18 @@ function computeStorageCandidates(raw, warnings) {
   );
 }
 
-function pickInitial(products, target) {
-  const sorted = [...products].sort((a, b) => a.price - b.price);
-  const withinTolerance = sorted.filter((p) => p.price <= target * 1.15);
-  if (withinTolerance.length) {
-    return withinTolerance[withinTolerance.length - 1];
-  }
-  return sorted[0] || null;
-}
+// Teto usado tanto na fase de upgrade quanto nos recálculos em cascata:
+// nenhuma categoria sobe (ou é "reencaixada" após uma troca de CPU/GPU)
+// além de N vezes o que o próprio peso dela no orçamento sugere. Sem isso,
+// uma categoria com degraus de preço miúdos (RAM, por exemplo) engole toda
+// a folga que deveria ir pra GPU/CPU, e um recálculo em cascata pode
+// "reencaixar" a placa-mãe/RAM/fonte num preço bem mais alto sem checar o
+// orçamento total.
+const CEILING_MULT = 1.6;
 
-// Usado ao recalcular uma categoria dependente após uma troca de CPU/GPU:
-// tenta preservar a faixa de preço já alocada em vez de resetar para o mais
-// barato.
+// Escolhe, numa lista já ordenada por preço, o item mais próximo de
+// targetPrice. É o critério de escolha usado em toda categoria (inicial e
+// nos recálculos em cascata após trocar CPU/GPU).
 function pickClosestByPrice(sorted, targetPrice) {
   if (!sorted.length) return null;
   return sorted.reduce((best, p) =>
@@ -179,16 +179,32 @@ function buildConfiguration(budget, categoryResults) {
   const selection = {};
   const warnings = [];
 
+  // Escolhe, dentro de cada categoria, o item mais próximo do valor-alvo
+  // (preço-alvo informado, ou o peso da categoria vezes o orçamento por
+  // padrão). Usar "mais próximo" em vez de "o mais caro que ainda cabe"
+  // faz a soma das 8 categorias já convergir perto do orçamento total desde
+  // a primeira passada — sem isso, várias categorias escolhendo cada uma o
+  // máximo que sua própria tolerância permite somava bem mais que o
+  // orçamento, e a correção (cortar sempre o item mais caro entre todos)
+  // penalizava desproporcionalmente a GPU, que normalmente é a peça mais
+  // cara e portanto a primeira a ser cortada repetidas vezes.
   function setCategory(key, sorted, preferredPrice) {
     sortedByCategory[key] = sorted;
     if (!sorted.length) {
       selection[key] = null;
       return;
     }
-    selection[key] =
-      preferredPrice == null
-        ? pickInitial(sorted, budget * pctByKey[key])
-        : pickClosestByPrice(sorted, preferredPrice);
+    selection[key] = pickClosestByPrice(sorted, preferredPrice ?? budget * pctByKey[key]);
+  }
+
+  // Ao reencaixar uma categoria dependente (placa-mãe/RAM/fonte) depois de
+  // uma troca de CPU/GPU, usa o preço anterior como alvo — mas nunca acima
+  // do teto da própria categoria, pra uma troca de socket/marca não poder
+  // "reencaixar" num item bem mais caro só por ser o mais próximo do preço
+  // antigo num pool agora diferente.
+  function cappedTarget(key, prevPrice) {
+    const ceiling = budget * pctByKey[key] * CEILING_MULT;
+    return Math.min(prevPrice ?? budget * pctByKey[key], ceiling);
   }
 
   // Recalcula placa-mãe (a partir da CPU atual) e, em cascata, a RAM
@@ -198,7 +214,7 @@ function buildConfiguration(budget, categoryResults) {
     const prevPrice = selection.motherboard?.price;
     const candidates = computeMotherboardCandidates(rawByKey.motherboard, selection.cpu, warnings);
     const sorted = [...candidates].sort((a, b) => a.price - b.price);
-    setCategory("motherboard", sorted, prevPrice ?? budget * pctByKey.motherboard);
+    setCategory("motherboard", sorted, cappedTarget("motherboard", prevPrice));
     refreshFromMotherboard();
   }
 
@@ -209,7 +225,7 @@ function buildConfiguration(budget, categoryResults) {
     const prevPrice = selection.ram?.price;
     const candidates = computeRamCandidates(rawByKey.ram, selection.motherboard, warnings);
     const sorted = [...candidates].sort((a, b) => a.price - b.price);
-    setCategory("ram", sorted, prevPrice ?? budget * pctByKey.ram);
+    setCategory("ram", sorted, cappedTarget("ram", prevPrice));
   }
 
   // Recalcula fonte a partir da GPU atual. Chamada sempre que a GPU muda.
@@ -218,7 +234,7 @@ function buildConfiguration(budget, categoryResults) {
     const prevPrice = selection.psu?.price;
     const candidates = computePsuCandidates(rawByKey.psu, selection.gpu, warnings);
     const sorted = [...candidates].sort((a, b) => a.price - b.price);
-    setCategory("psu", sorted, prevPrice ?? budget * pctByKey.psu);
+    setCategory("psu", sorted, cappedTarget("psu", prevPrice));
   }
 
   // --- Seleção inicial, na ordem das categorias (gpu, cpu, motherboard,
@@ -264,22 +280,26 @@ function buildConfiguration(budget, categoryResults) {
 
   // Downgrade: enquanto estourar o orçamento, troca o item de maior preço
   // (entre os que ainda têm opção mais barata) pelo próximo mais barato.
-  let guard = 0;
-  while (total() > budget && guard < 200) {
-    guard++;
-    let swap = null;
-    for (const cat of [...activeCats()].sort(
-      (a, b) => selection[b.key].price - selection[a.key].price
-    )) {
-      const cheaper = nextCheaper(sortedByCategory[cat.key], selection[cat.key]);
-      if (cheaper) {
-        swap = { key: cat.key, product: cheaper };
-        break;
+  function downgradePass() {
+    let guard = 0;
+    while (total() > budget && guard < 200) {
+      guard++;
+      let swap = null;
+      for (const cat of [...activeCats()].sort(
+        (a, b) => selection[b.key].price - selection[a.key].price
+      )) {
+        const cheaper = nextCheaper(sortedByCategory[cat.key], selection[cat.key]);
+        if (cheaper) {
+          swap = { key: cat.key, product: cheaper };
+          break;
+        }
       }
+      if (!swap) break; // todas as categorias já estão no item mais barato
+      applySwap(swap.key, swap.product);
     }
-    if (!swap) break; // todas as categorias já estão no item mais barato
-    applySwap(swap.key, swap.product);
   }
+
+  downgradePass();
 
   if (total() > budget) {
     warnings.push(
@@ -287,27 +307,43 @@ function buildConfiguration(budget, categoryResults) {
     );
   }
 
-  // Upgrade: se sobrar folga, tenta melhorar as categorias de maior peso primeiro.
-  guard = 0;
-  while (guard < 200) {
-    guard++;
-    let upgraded = false;
-    const priorityOrder = [...activeCats()].sort((a, b) => b.pct - a.pct);
-    for (const cat of priorityOrder) {
-      const room = budget - total();
-      if (room <= 0) break;
-      const better = nextPricier(
-        sortedByCategory[cat.key],
-        selection[cat.key],
-        selection[cat.key].price + room
-      );
-      if (better) {
-        applySwap(cat.key, better);
-        upgraded = true;
+  // Upgrade: se sobrar folga, tenta melhorar as categorias de maior peso
+  // primeiro. Roda em duas levas: a primeira respeita um teto por categoria
+  // (CEILING_MULT vezes o peso dela no orçamento), pra RAM/fonte/etc. não
+  // engolirem a folga que deveria ir pra GPU/CPU; a segunda leva libera
+  // qualquer sobra que ainda reste (ex.: orçamento bem acima do necessário
+  // pra encher todo mundo até o teto) sem limite, também em ordem de peso.
+  function upgradePass(useCeiling) {
+    let guard = 0;
+    while (guard < 200) {
+      guard++;
+      let upgraded = false;
+      const priorityOrder = [...activeCats()].sort((a, b) => b.pct - a.pct);
+      for (const cat of priorityOrder) {
+        const room = budget - total();
+        if (room <= 0) break;
+        let maxPrice = selection[cat.key].price + room;
+        if (useCeiling) {
+          const ceiling = budget * pctByKey[cat.key] * CEILING_MULT;
+          maxPrice = Math.min(maxPrice, ceiling);
+        }
+        const better = nextPricier(sortedByCategory[cat.key], selection[cat.key], maxPrice);
+        if (better) {
+          applySwap(cat.key, better);
+          upgraded = true;
+        }
       }
+      if (!upgraded) break;
     }
-    if (!upgraded) break;
   }
+
+  upgradePass(true);
+  upgradePass(false);
+
+  // Rede de segurança: um recálculo em cascata (troca de CPU/GPU que muda
+  // socket/marca) pode, em tese, reencaixar uma categoria dependente acima
+  // do teto dela mesma. Garante que nada saia do ar acima do orçamento.
+  downgradePass();
 
   const items = categoryResults.map((cat) => ({
     key: cat.key,
