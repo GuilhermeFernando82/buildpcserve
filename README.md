@@ -1,3 +1,5 @@
+![Montador de PC](./banner.svg)
+
 # buildpcserve
 
 Backend (Node/Express) do Montador de PC. Busca preços em tempo real na
