@@ -145,11 +145,21 @@ const CEILING_MULT = 1.6;
 // Escolhe, numa lista já ordenada por preço, o item mais próximo de
 // targetPrice. É o critério de escolha usado em toda categoria (inicial e
 // nos recálculos em cascata após trocar CPU/GPU).
-function pickClosestByPrice(sorted, targetPrice) {
+//
+// `preferPredicate`, quando informado, dá vantagem aos itens que batem nele
+// (a "distância" desses itens conta como só 60% do valor real) — usado pra
+// puxar a escolha de placa-mãe pra DDR4 quando o preço for parecido: DDR5
+// tem um piso de preço de pente bem mais alto (~R$900 vs ~R$300 do DDR4),
+// então uma placa DDR5 escolhida só por estar R$10 mais perto do alvo pode
+// custar centenas de reais a mais no fim das contas, via RAM, dinheiro que
+// devia ter ido pra GPU/CPU.
+function pickClosestByPrice(sorted, targetPrice, preferPredicate) {
   if (!sorted.length) return null;
-  return sorted.reduce((best, p) =>
-    Math.abs(p.price - targetPrice) < Math.abs(best.price - targetPrice) ? p : best
-  );
+  const distance = (p) => {
+    const d = Math.abs(p.price - targetPrice);
+    return preferPredicate && preferPredicate(p) ? d * 0.6 : d;
+  };
+  return sorted.reduce((best, p) => (distance(p) < distance(best) ? p : best));
 }
 
 function nextCheaper(sorted, current) {
@@ -188,14 +198,24 @@ function buildConfiguration(budget, categoryResults) {
   // orçamento, e a correção (cortar sempre o item mais caro entre todos)
   // penalizava desproporcionalmente a GPU, que normalmente é a peça mais
   // cara e portanto a primeira a ser cortada repetidas vezes.
-  function setCategory(key, sorted, preferredPrice) {
+  function setCategory(key, sorted, preferredPrice, preferPredicate) {
     sortedByCategory[key] = sorted;
     if (!sorted.length) {
       selection[key] = null;
       return;
     }
-    selection[key] = pickClosestByPrice(sorted, preferredPrice ?? budget * pctByKey[key]);
+    selection[key] = pickClosestByPrice(
+      sorted,
+      preferredPrice ?? budget * pctByKey[key],
+      preferPredicate
+    );
   }
+
+  // DDR4 tem um piso de preço de pente bem mais baixo que DDR5 (~R$300 vs
+  // ~R$900). Preferir placa-mãe DDR4 quando o preço for parecido evita que
+  // a plataforma escolhida "imponha" um gasto bem maior em RAM mais adiante
+  // (ver pickClosestByPrice).
+  const preferDdr4 = (p) => detectDdr(p.name) === "DDR4";
 
   // Ao reencaixar uma categoria dependente (placa-mãe/RAM/fonte) depois de
   // uma troca de CPU/GPU, usa o preço anterior como alvo — mas nunca acima
@@ -214,7 +234,7 @@ function buildConfiguration(budget, categoryResults) {
     const prevPrice = selection.motherboard?.price;
     const candidates = computeMotherboardCandidates(rawByKey.motherboard, selection.cpu, warnings);
     const sorted = [...candidates].sort((a, b) => a.price - b.price);
-    setCategory("motherboard", sorted, cappedTarget("motherboard", prevPrice));
+    setCategory("motherboard", sorted, cappedTarget("motherboard", prevPrice), preferDdr4);
     refreshFromMotherboard();
   }
 
@@ -274,7 +294,8 @@ function buildConfiguration(budget, categoryResults) {
 
   function applySwap(key, product) {
     selection[key] = product;
-    if (key === "cpu") refreshFromCpu();
+    if (key === "cpu") refreshFromCpu(); // já recalcula placa-mãe e, em cascata, RAM
+    else if (key === "motherboard") refreshFromMotherboard(); // motherboard pode subir direto (não só via CPU)
     if (key === "gpu") refreshFromGpu();
   }
 
