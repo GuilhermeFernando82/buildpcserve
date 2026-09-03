@@ -6,6 +6,7 @@ const { fetchFromAllStores } = require("./stores");
 const { buildConfiguration } = require("./builder");
 const { CATEGORY_NAME_FILTERS, filterByCategory, filterByRelevance } = require("./categoryFilters");
 const { recordSnapshot, getHistory } = require("./priceHistory");
+const { ensureSchema } = require("./db");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -140,7 +141,11 @@ app.get("/api/search", async (req, res) => {
     const result = filtered.length ? filtered : base;
 
     result.sort((a, b) => a.price - b.price);
-    recordSnapshot(result); // alimenta o histórico de preço pra próxima vez
+    // Não espera terminar de gravar pra responder — a gravação roda em
+    // segundo plano, alimentando o histórico de preço pra próxima vez.
+    recordSnapshot(result).catch((err) =>
+      console.error("Erro ao gravar histórico de preço:", err.message)
+    );
     res.json({ products: result, failedStores });
   } catch (err) {
     console.error(`Erro ao buscar "${q}":`, err.message);
@@ -150,14 +155,30 @@ app.get("/api/search", async (req, res) => {
   }
 });
 
-app.get("/api/price-history", (req, res) => {
+app.get("/api/price-history", async (req, res) => {
   const id = String(req.query.id || "");
   if (!id) {
     return res.status(400).json({ error: "Informe o id do produto." });
   }
-  res.json({ points: getHistory(id) });
+  try {
+    res.json({ points: await getHistory(id) });
+  } catch (err) {
+    console.error("Erro ao buscar histórico de preço:", err.message);
+    res.status(502).json({ error: "Não foi possível buscar o histórico agora." });
+  }
 });
 
-app.listen(PORT, () => {
-  console.log(`Servidor rodando em http://localhost:${PORT}`);
-});
+ensureSchema()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Servidor rodando em http://localhost:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("Erro ao preparar o banco de dados:", err.message);
+    // Sobe mesmo assim — priceHistory.js cai pro fallback em memória se o
+    // banco falhar, o resto da aplicação não depende dele.
+    app.listen(PORT, () => {
+      console.log(`Servidor rodando em http://localhost:${PORT}`);
+    });
+  });
