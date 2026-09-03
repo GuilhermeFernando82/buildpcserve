@@ -20,4 +20,21 @@ function filterByCategory(products, categoryKey) {
   return products.filter((p) => pattern.test(p.name));
 }
 
-module.exports = { CATEGORY_NAME_FILTERS, filterByCategory };
+// O buscador dos sites é "fuzzy" — buscar "rtx 5070" pode trazer um
+// "Ryzen 7 5700X" só porque os números se parecem. Exige que cada palavra
+// digitada (com 3+ caracteres, ignorando conectivos curtos tipo "de"/"do")
+// apareça de fato no nome do produto, sem se importar com espaço/maiúscula
+// ("RTX5070" bate com a busca "rtx 5070" do mesmo jeito).
+function filterByRelevance(products, query) {
+  const tokens = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length >= 3);
+  if (!tokens.length) return products;
+  return products.filter((p) => {
+    const name = p.name.toLowerCase();
+    return tokens.every((t) => name.includes(t));
+  });
+}
+
+module.exports = { CATEGORY_NAME_FILTERS, filterByCategory, filterByRelevance };

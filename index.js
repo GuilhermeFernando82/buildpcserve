@@ -4,7 +4,8 @@ const cors = require("cors");
 const { getCategories } = require("./categories");
 const { fetchFromAllStores } = require("./stores");
 const { buildConfiguration } = require("./builder");
-const { CATEGORY_NAME_FILTERS, filterByCategory } = require("./categoryFilters");
+const { CATEGORY_NAME_FILTERS, filterByCategory, filterByRelevance } = require("./categoryFilters");
+const { recordSnapshot, getHistory } = require("./priceHistory");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -126,14 +127,20 @@ app.get("/api/search", async (req, res) => {
   try {
     const { products, failedStores } = await fetchFromAllStores(q);
 
+    // A busca dos sites é "fuzzy" (ex.: "rtx 5070" trazendo "Ryzen 7
+    // 5700X"); exige que as palavras digitadas apareçam de fato no nome.
+    const relevant = filterByRelevance(products, q);
+    const base = relevant.length ? relevant : products;
+
     // Filtra pra categoria pedida (ex.: busca de "processador" não deve
     // trazer cooler de processador). Se o filtro zerar tudo — termo digitado
     // não bate com o padrão de nome esperado pra essa categoria — melhor
     // mostrar os resultados sem filtro do que uma lista vazia.
-    const filtered = category ? filterByCategory(products, category) : products;
-    const result = filtered.length ? filtered : products;
+    const filtered = category ? filterByCategory(base, category) : base;
+    const result = filtered.length ? filtered : base;
 
     result.sort((a, b) => a.price - b.price);
+    recordSnapshot(result); // alimenta o histórico de preço pra próxima vez
     res.json({ products: result, failedStores });
   } catch (err) {
     console.error(`Erro ao buscar "${q}":`, err.message);
@@ -141,6 +148,14 @@ app.get("/api/search", async (req, res) => {
       error: "Não foi possível buscar agora. Tente novamente em instantes.",
     });
   }
+});
+
+app.get("/api/price-history", (req, res) => {
+  const id = String(req.query.id || "");
+  if (!id) {
+    return res.status(400).json({ error: "Informe o id do produto." });
+  }
+  res.json({ points: getHistory(id) });
 });
 
 app.listen(PORT, () => {
