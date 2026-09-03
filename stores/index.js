@@ -1,0 +1,39 @@
+const kabum = require("../kabum");
+const terabyte = require("./terabyte");
+
+// Pichau não entrou: o site detecta o Chromium headless (mesmo com patches
+// de stealth em navigator.webdriver/plugins/chrome) e serve uma página de
+// bloqueio disfarçada de "Site em Manutenção" para esse tráfego. Ver
+// stores/pichau.js — o scraper está pronto, só não passa pela proteção.
+const STORES = [
+  { id: "kabum", label: "Kabum", ...kabum },
+  { id: "terabyte", label: "Terabyte", ...terabyte },
+];
+
+// Busca uma categoria em todas as lojas em paralelo e devolve o pool
+// combinado de produtos (cada um já marcado com `store`). Uma loja que falhe
+// (fora do ar, bloqueou o scraper, etc.) não derruba as demais.
+async function fetchFromAllStores(term) {
+  const results = await Promise.allSettled(
+    STORES.map((store) => store.fetchCategoryProducts(term))
+  );
+
+  const products = [];
+  const failedStores = [];
+
+  results.forEach((result, i) => {
+    const store = STORES[i];
+    if (result.status === "fulfilled") {
+      // id único entre lojas: nem toda loja expõe um código de produto, mas
+      // a URL sempre serve como chave estável.
+      products.push(...result.value.map((p) => ({ ...p, id: `${p.store}:${p.url}` })));
+    } else {
+      failedStores.push(store.label);
+      console.error(`Erro ao buscar em ${store.label} (termo "${term}"):`, result.reason?.message);
+    }
+  });
+
+  return { products, failedStores };
+}
+
+module.exports = { STORES, fetchFromAllStores };
