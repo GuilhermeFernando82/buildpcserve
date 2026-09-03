@@ -46,10 +46,125 @@ function extractWatts(name) {
   return m ? Number(m[1]) : null;
 }
 
-function minWattsForGpu(gpuPrice) {
-  if (gpuPrice > 3000) return 650;
-  if (gpuPrice > 1500) return 550;
-  return 450;
+// TDP (consumo de placa) de referência por modelo, em watts — valores
+// públicos de fabricante. Mais específico primeiro (ex.: "5070 TI" antes de
+// "5070") já que é checado em ordem e o primeiro que bater vence.
+const GPU_TDP_TABLE = [
+  // NVIDIA RTX 50 (Blackwell)
+  [/RTX\s?5090/i, 575],
+  [/RTX\s?5080/i, 360],
+  [/RTX\s?5070\s?TI/i, 300],
+  [/RTX\s?5070/i, 250],
+  [/RTX\s?5060\s?TI/i, 180],
+  [/RTX\s?5060/i, 145],
+  [/RTX\s?5050/i, 130],
+  // NVIDIA RTX 40 (Ada)
+  [/RTX\s?4090/i, 450],
+  [/RTX\s?4080/i, 320],
+  [/RTX\s?4070\s?TI/i, 285],
+  [/RTX\s?4070/i, 200],
+  [/RTX\s?4060\s?TI/i, 160],
+  [/RTX\s?4060/i, 115],
+  // NVIDIA RTX 30 (Ampere)
+  [/RTX\s?3090/i, 380],
+  [/RTX\s?3080/i, 320],
+  [/RTX\s?3070\s?TI/i, 290],
+  [/RTX\s?3070/i, 220],
+  [/RTX\s?3060\s?TI/i, 200],
+  [/RTX\s?3060/i, 170],
+  [/RTX\s?3050/i, 130],
+  // NVIDIA GTX 16 / entrada
+  [/GTX\s?1660/i, 125],
+  [/GTX\s?1650/i, 75],
+  [/GTX\s?1630/i, 75],
+  [/GT\s?1030/i, 30],
+  [/GT\s?730/i, 25],
+  [/GT\s?710/i, 20],
+  // AMD RX 9000 (RDNA4)
+  [/RX\s?9070\s?XT/i, 304],
+  [/RX\s?9070/i, 220],
+  [/RX\s?9060\s?XT/i, 160],
+  [/RX\s?9060/i, 150],
+  // AMD RX 7000 (RDNA3)
+  [/RX\s?7900\s?XTX/i, 355],
+  [/RX\s?7900\s?XT/i, 315],
+  [/RX\s?7900\s?GRE/i, 260],
+  [/RX\s?7800\s?XT/i, 263],
+  [/RX\s?7700\s?XT/i, 245],
+  [/RX\s?7600\s?XT/i, 190],
+  [/RX\s?7600/i, 165],
+  // AMD RX 6000 (RDNA2) e anteriores
+  [/RX\s?6950/i, 335],
+  [/RX\s?6900/i, 300],
+  [/RX\s?6800\s?XT/i, 300],
+  [/RX\s?6800/i, 250],
+  [/RX\s?6750/i, 250],
+  [/RX\s?6700/i, 230],
+  [/RX\s?6650/i, 180],
+  [/RX\s?6600\s?XT/i, 160],
+  [/RX\s?6600/i, 132],
+  [/RX\s?6500/i, 107],
+  [/RX\s?5700/i, 225],
+  [/RX\s?5600/i, 150],
+  [/RX\s?5500/i, 130],
+  [/RX\s?580/i, 185],
+  [/RX\s?550/i, 50],
+  // Intel Arc
+  [/ARC\s?B580/i, 190],
+  [/ARC\s?B570/i, 150],
+  [/ARC\s?A770/i, 225],
+  [/ARC\s?A750/i, 225],
+  [/ARC\s?A580/i, 175],
+  [/ARC\s?A380/i, 75],
+];
+
+function estimateGpuWatts(name) {
+  const n = name.toUpperCase();
+  for (const [pattern, watts] of GPU_TDP_TABLE) {
+    if (pattern.test(n)) return watts;
+  }
+  return null; // modelo não reconhecido — quem chama decide o fallback
+}
+
+// TDP de CPU é mais variável que o de GPU (PBP vs. limites configurados
+// pela placa-mãe), então isso é só uma estimativa por faixa/linha — o
+// suficiente pra não subdimensionar a fonte.
+function estimateCpuWatts(name) {
+  const n = name.toUpperCase();
+  if (/RYZEN\s?9|CORE\s?I9|CORE\s?ULTRA\s?9/.test(n)) return 145;
+  if (/RYZEN\s?7|CORE\s?I7|CORE\s?ULTRA\s?7/.test(n)) return 105;
+  if (/RYZEN\s?5|CORE\s?I5|CORE\s?ULTRA\s?5/.test(n)) return 80;
+  if (/RYZEN\s?3|CORE\s?I3/.test(n)) return 60;
+  return 80; // desconhecido: assume uma faixa intermediária
+}
+
+const STANDARD_PSU_WATTAGES = [450, 500, 550, 600, 650, 700, 750, 850, 1000, 1200];
+
+function roundUpToStandardWattage(watts) {
+  for (const std of STANDARD_PSU_WATTAGES) {
+    if (std >= watts) return std;
+  }
+  return STANDARD_PSU_WATTAGES[STANDARD_PSU_WATTAGES.length - 1];
+}
+
+// Wattagem mínima de fonte pra configuração inteira: TDP estimado da GPU +
+// CPU + ~120W pro resto (placa-mãe, RAM, armazenamento, fans/AIO), com 30%
+// de margem (curva de eficiência da fonte + headroom pra picos/upgrades),
+// arredondado pra cima até um valor comercial comum de fonte. Sem
+// reconhecer o modelo da GPU, cai de volta numa estimativa por faixa de
+// preço (proxy grosseiro, mas melhor que nada).
+function minWattsForBuild(gpuProduct, cpuProduct) {
+  const gpuWatts =
+    (gpuProduct && estimateGpuWatts(gpuProduct.name)) ??
+    (gpuProduct && gpuProduct.price > 3000
+      ? 300
+      : gpuProduct && gpuProduct.price > 1500
+        ? 200
+        : 130);
+  const cpuWatts = cpuProduct ? estimateCpuWatts(cpuProduct.name) : 80;
+  const restOfSystem = 120;
+  const raw = (gpuWatts + cpuWatts + restOfSystem) * 1.3;
+  return roundUpToStandardWattage(raw);
 }
 
 // Itens que aparecem misturados nas categorias de armazenamento mas não são
@@ -113,9 +228,9 @@ function computeRamCandidates(raw, motherboardProduct, warnings) {
   return candidates;
 }
 
-function computePsuCandidates(raw, gpuProduct, warnings) {
-  if (!gpuProduct) return raw;
-  const minWatts = minWattsForGpu(gpuProduct.price);
+function computePsuCandidates(raw, gpuProduct, cpuProduct, warnings) {
+  if (!gpuProduct && !cpuProduct) return raw;
+  const minWatts = minWattsForBuild(gpuProduct, cpuProduct);
   return filterWithFallback(
     raw,
     (p) => (extractWatts(p.name) ?? 0) >= minWatts,
@@ -227,15 +342,18 @@ function buildConfiguration(budget, categoryResults) {
     return Math.min(prevPrice ?? budget * pctByKey[key], ceiling);
   }
 
-  // Recalcula placa-mãe (a partir da CPU atual) e, em cascata, a RAM
-  // (a partir da placa-mãe resultante). Chamada sempre que a CPU muda.
+  // Recalcula placa-mãe (a partir da CPU atual), em cascata a RAM (a partir
+  // da placa-mãe resultante) e a fonte (o consumo da CPU também entra na
+  // conta). Chamada sempre que a CPU muda.
   function refreshFromCpu() {
-    if (!rawByKey.motherboard) return;
-    const prevPrice = selection.motherboard?.price;
-    const candidates = computeMotherboardCandidates(rawByKey.motherboard, selection.cpu, warnings);
-    const sorted = [...candidates].sort((a, b) => a.price - b.price);
-    setCategory("motherboard", sorted, cappedTarget("motherboard", prevPrice), preferDdr4);
-    refreshFromMotherboard();
+    if (rawByKey.motherboard) {
+      const prevPrice = selection.motherboard?.price;
+      const candidates = computeMotherboardCandidates(rawByKey.motherboard, selection.cpu, warnings);
+      const sorted = [...candidates].sort((a, b) => a.price - b.price);
+      setCategory("motherboard", sorted, cappedTarget("motherboard", prevPrice), preferDdr4);
+      refreshFromMotherboard();
+    }
+    refreshPsu();
   }
 
   // Recalcula RAM a partir da placa-mãe atual. Chamada sempre que a placa-mãe
@@ -248,11 +366,12 @@ function buildConfiguration(budget, categoryResults) {
     setCategory("ram", sorted, cappedTarget("ram", prevPrice));
   }
 
-  // Recalcula fonte a partir da GPU atual. Chamada sempre que a GPU muda.
-  function refreshFromGpu() {
+  // Recalcula fonte a partir da GPU+CPU atuais (consumo somado dos dois é o
+  // que determina a wattagem mínima). Chamada sempre que a GPU ou a CPU mudam.
+  function refreshPsu() {
     if (!rawByKey.psu) return;
     const prevPrice = selection.psu?.price;
-    const candidates = computePsuCandidates(rawByKey.psu, selection.gpu, warnings);
+    const candidates = computePsuCandidates(rawByKey.psu, selection.gpu, selection.cpu, warnings);
     const sorted = [...candidates].sort((a, b) => a.price - b.price);
     setCategory("psu", sorted, cappedTarget("psu", prevPrice));
   }
@@ -270,12 +389,12 @@ function buildConfiguration(budget, categoryResults) {
     setCategory(cat.key, sorted);
 
     if (cat.key === "cpu") refreshFromCpu();
-    if (cat.key === "gpu") refreshFromGpu();
+    if (cat.key === "gpu") refreshPsu();
   }
   // Caso alguma dessas categorias não exista no pedido, garante que fiquem
   // resolvidas mesmo sem cpu/gpu correspondente.
   if (!("motherboard" in sortedByCategory) && rawByKey.motherboard) refreshFromCpu();
-  if (!("psu" in sortedByCategory) && rawByKey.psu) refreshFromGpu();
+  if (!("psu" in sortedByCategory) && rawByKey.psu) refreshPsu();
 
   if (categoryResults.every((c) => !rawByKey[c.key]?.length)) {
     return { items: categoryResults.map((c) => ({ key: c.key, label: c.label, product: null })), total: 0, warnings };
@@ -294,9 +413,9 @@ function buildConfiguration(budget, categoryResults) {
 
   function applySwap(key, product) {
     selection[key] = product;
-    if (key === "cpu") refreshFromCpu(); // já recalcula placa-mãe e, em cascata, RAM
+    if (key === "cpu") refreshFromCpu(); // já recalcula placa-mãe, RAM e fonte em cascata
     else if (key === "motherboard") refreshFromMotherboard(); // motherboard pode subir direto (não só via CPU)
-    if (key === "gpu") refreshFromGpu();
+    if (key === "gpu") refreshPsu();
   }
 
   // Downgrade: enquanto estourar o orçamento, troca o item de maior preço
