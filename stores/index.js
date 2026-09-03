@@ -1,13 +1,21 @@
 const kabum = require("../kabum");
 const terabyte = require("./terabyte");
+const patoloco = require("./patoloco");
 
 // Pichau não entrou: o site detecta o Chromium headless (mesmo com patches
 // de stealth em navigator.webdriver/plugins/chrome) e serve uma página de
 // bloqueio disfarçada de "Site em Manutenção" para esse tráfego. Ver
 // stores/pichau.js — o scraper está pronto, só não passa pela proteção.
+//
+// Amazon não entrou: as Condições de Uso proíbem explicitamente "a obtenção
+// ou uso de quaisquer listas de produtos, descrições ou preços" e "qualquer
+// coleta de dados, robôs ou quaisquer outras ferramentas de extração de
+// dados". Diferente da Pichau (barreira técnica), aqui é uma proibição
+// escrita — não é algo que dá pra contornar de forma legítima.
 const STORES = [
   { id: "kabum", label: "Kabum", ...kabum },
   { id: "terabyte", label: "Terabyte", ...terabyte },
+  { id: "patoloco", label: "Pato Loco", ...patoloco },
 ];
 
 // Busca uma categoria em todas as lojas em paralelo e devolve o pool
