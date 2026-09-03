@@ -327,7 +327,18 @@ function extractStorageCapacityGb(name) {
   return null;
 }
 
-function computeStorageCandidates(raw, warnings, storageGb) {
+// M.2 é só o formato físico — um SSD M.2 pode ser NVMe (mais rápido, barramento
+// PCIe) ou M.2 SATA (mesmo protocolo do 2.5", só o conector que muda). Por
+// isso "m.2" sozinho não basta pra dizer NVMe; procura "nvme" ou "pcie"
+// primeiro, e só usa SATA como sinal quando nenhum dos dois aparece.
+function detectStorageInterface(name) {
+  const n = name.toLowerCase();
+  if (/nvme|pcie/.test(n)) return "nvme";
+  if (/\bsata\b/.test(n)) return "sata";
+  return null;
+}
+
+function computeStorageCandidates(raw, warnings, storageGb, storageType) {
   let candidates = filterWithFallback(
     raw,
     (p) => !STORAGE_ACCESSORY_PATTERN.test(p.name) && p.price >= 60,
@@ -344,6 +355,15 @@ function computeStorageCandidates(raw, warnings, storageGb) {
       },
       warnings,
       `Não encontramos SSD com ${storageGb}GB ou mais disponível agora; exibindo outras capacidades.`
+    );
+  }
+
+  if (storageType) {
+    candidates = filterWithFallback(
+      candidates,
+      (p) => detectStorageInterface(p.name) === storageType,
+      warnings,
+      `Não encontramos SSD ${storageType === "nvme" ? "NVMe" : "SATA"} disponível agora; exibindo outras opções.`
     );
   }
 
@@ -399,6 +419,7 @@ function buildConfiguration(budget, categoryResults, options = {}) {
     ramGb = null, // capacidade total mínima de RAM desejada (padrão: 16)
     dualChannel = false, // exige pentes em pares (2 ou 4)
     storageGb = null, // capacidade mínima de SSD desejada
+    storageType = null, // "nvme" | "sata" | null (qualquer)
   } = options;
   const rawByKey = {};
   const pctByKey = {};
@@ -498,7 +519,7 @@ function buildConfiguration(budget, categoryResults, options = {}) {
     if (["motherboard", "ram", "psu"].includes(cat.key)) continue; // via refresh*
     let candidates = cat.products;
     if (cat.key === "storage") {
-      candidates = computeStorageCandidates(candidates, warnings, storageGb);
+      candidates = computeStorageCandidates(candidates, warnings, storageGb, storageType);
     }
     if (cat.key === "gpu" && gpuBrand) {
       candidates = filterWithFallback(
