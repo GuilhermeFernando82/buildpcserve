@@ -221,11 +221,11 @@ function extractRamCapacityGb(name) {
   return m ? Number(m[1]) : null;
 }
 
-const MIN_RAM_GB = 16;
+const DEFAULT_RAM_GB = 16;
 const MAX_RAM_STICKS = 4;
 
-// Embrulha um anúncio de RAM num "pacote": quantas unidades dele (1 a 4)
-// são necessárias pra bater os 16GB mínimos, com o preço já multiplicado
+// Embrulha um anúncio de RAM num "pacote": quantas unidades dele são
+// necessárias pra bater a capacidade pedida, com o preço já multiplicado
 // pela quantidade. Isso deixa o resto do algoritmo (que só entende "escolha
 // 1 item pelo preço") funcionar sem mudança nenhuma — ele passa a comparar
 // pacotes de RAM pelo preço total, do mesmo jeito que compara qualquer
@@ -246,7 +246,22 @@ function toRamPackage(p, quantity) {
   };
 }
 
-function computeRamCandidates(raw, motherboardProduct, warnings) {
+// Pra um anúncio específico, acha a menor quantidade (dentre as permitidas)
+// que já fecha a capacidade pedida. `allowedQuantities` restringe as opções
+// — ex.: [2] pra forçar dual channel (só pares), [1,2,3,4] pra qualquer
+// combinação de até 4 pentes.
+function packageForListing(p, targetGb, allowedQuantities) {
+  const gbEach = extractRamCapacityGb(p.name);
+  if (!gbEach) return null;
+  for (const qty of allowedQuantities) {
+    if (gbEach * qty >= targetGb) return toRamPackage(p, qty);
+  }
+  return null;
+}
+
+function computeRamCandidates(raw, motherboardProduct, warnings, ramGb, dualChannel) {
+  const targetGb = ramGb && ramGb > 0 ? ramGb : DEFAULT_RAM_GB;
+
   // A categoria mistura pentes de notebook (SO-DIMM) com os de desktop
   // (DIMM); só os de desktop encaixam na placa-mãe escolhida.
   let candidates = filterWithFallback(
@@ -268,25 +283,28 @@ function computeRamCandidates(raw, motherboardProduct, warnings) {
     }
   }
 
-  // Monta pacotes de 1 a 4 pentes iguais até fechar pelo menos 16GB.
-  // Anúncios sem capacidade reconhecível, ou que precisariam de mais de 4
-  // pentes pra chegar lá, ficam de fora.
-  const packages = [];
-  for (const p of candidates) {
-    const gbEach = extractRamCapacityGb(p.name);
-    if (!gbEach) continue;
-    const quantity = Math.ceil(MIN_RAM_GB / gbEach);
-    if (quantity > MAX_RAM_STICKS) continue;
-    packages.push(toRamPackage(p, quantity));
+  const buildFrom = (allowedQuantities) =>
+    candidates.map((p) => packageForListing(p, targetGb, allowedQuantities)).filter(Boolean);
+
+  if (dualChannel) {
+    // Dual channel = pentes iguais em pares. Tenta 2 primeiro; se nenhum
+    // anúncio sozinho chega na capacidade pedida nem com 2 unidades, tenta
+    // 4 (dois pares) antes de desistir do dual channel.
+    let packages = buildFrom([2]);
+    if (!packages.length) packages = buildFrom([4]);
+    if (packages.length) return packages;
+    warnings.push(
+      `Não encontramos como fechar ${targetGb}GB em dual channel (pentes em pares); exibindo opções sem exigir dual channel.`
+    );
   }
 
+  const packages = buildFrom([1, 2, 3, 4]);
   if (!packages.length) {
     warnings.push(
-      "Não encontramos memória RAM que alcance 16GB com até 4 pentes; exibindo opções abaixo de 16GB."
+      `Não encontramos memória RAM que alcance ${targetGb}GB com até ${MAX_RAM_STICKS} pentes; exibindo opções abaixo disso.`
     );
     return candidates.map((p) => toRamPackage(p, 1));
   }
-
   return packages;
 }
 
@@ -301,13 +319,35 @@ function computePsuCandidates(raw, gpuProduct, cpuProduct, warnings) {
   );
 }
 
-function computeStorageCandidates(raw, warnings) {
-  return filterWithFallback(
+function extractStorageCapacityGb(name) {
+  const tb = name.match(/(\d+(?:[.,]\d+)?)\s?TB\b/i);
+  if (tb) return Math.round(parseFloat(tb[1].replace(",", ".")) * 1000);
+  const gb = name.match(/(\d{2,5})\s?GB\b/i);
+  if (gb) return Number(gb[1]);
+  return null;
+}
+
+function computeStorageCandidates(raw, warnings, storageGb) {
+  let candidates = filterWithFallback(
     raw,
     (p) => !STORAGE_ACCESSORY_PATTERN.test(p.name) && p.price >= 60,
     warnings,
     null
   );
+
+  if (storageGb) {
+    candidates = filterWithFallback(
+      candidates,
+      (p) => {
+        const cap = extractStorageCapacityGb(p.name);
+        return cap != null && cap >= storageGb;
+      },
+      warnings,
+      `Não encontramos SSD com ${storageGb}GB ou mais disponível agora; exibindo outras capacidades.`
+    );
+  }
+
+  return candidates;
 }
 
 // Teto usado tanto na fase de upgrade quanto nos recálculos em cascata:
@@ -353,7 +393,13 @@ function nextPricier(sorted, current, maxPrice) {
 }
 
 function buildConfiguration(budget, categoryResults, options = {}) {
-  const { gpuBrand = null } = options; // "nvidia" | "amd" | null (qualquer)
+  const {
+    gpuBrand = null, // "nvidia" | "amd" | null (qualquer)
+    cpuBrand = null, // "intel" | "amd" | null (qualquer)
+    ramGb = null, // capacidade total mínima de RAM desejada (padrão: 16)
+    dualChannel = false, // exige pentes em pares (2 ou 4)
+    storageGb = null, // capacidade mínima de SSD desejada
+  } = options;
   const rawByKey = {};
   const pctByKey = {};
   const labelByKey = {};
@@ -424,7 +470,13 @@ function buildConfiguration(budget, categoryResults, options = {}) {
   function refreshFromMotherboard() {
     if (!rawByKey.ram) return;
     const prevPrice = selection.ram?.price;
-    const candidates = computeRamCandidates(rawByKey.ram, selection.motherboard, warnings);
+    const candidates = computeRamCandidates(
+      rawByKey.ram,
+      selection.motherboard,
+      warnings,
+      ramGb,
+      dualChannel
+    );
     const sorted = [...candidates].sort((a, b) => a.price - b.price);
     setCategory("ram", sorted, cappedTarget("ram", prevPrice));
   }
@@ -446,7 +498,7 @@ function buildConfiguration(budget, categoryResults, options = {}) {
     if (["motherboard", "ram", "psu"].includes(cat.key)) continue; // via refresh*
     let candidates = cat.products;
     if (cat.key === "storage") {
-      candidates = computeStorageCandidates(candidates, warnings);
+      candidates = computeStorageCandidates(candidates, warnings, storageGb);
     }
     if (cat.key === "gpu" && gpuBrand) {
       candidates = filterWithFallback(
@@ -454,6 +506,15 @@ function buildConfiguration(budget, categoryResults, options = {}) {
         (p) => detectGpuBrand(p.name) === gpuBrand,
         warnings,
         `Não encontramos placa de vídeo ${gpuBrand === "nvidia" ? "NVIDIA" : "AMD"} disponível agora; exibindo outras marcas.`
+      );
+    }
+    if (cat.key === "cpu" && cpuBrand) {
+      const label = cpuBrand === "intel" ? "Intel" : "AMD";
+      candidates = filterWithFallback(
+        candidates,
+        (p) => detectCpuBrand(p.name) === label,
+        warnings,
+        `Não encontramos processador ${label} disponível agora; exibindo outras marcas.`
       );
     }
     const sorted = [...candidates].sort((a, b) => a.price - b.price);

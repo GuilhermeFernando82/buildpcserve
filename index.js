@@ -25,6 +25,19 @@ app.get("/api/build", async (req, res) => {
   const profile = req.query.profile === "balanced" ? "balanced" : "gpu";
   const gpuBrandRaw = String(req.query.gpuBrand || "").toLowerCase();
   const gpuBrand = ["nvidia", "amd"].includes(gpuBrandRaw) ? gpuBrandRaw : null;
+  const cpuBrandRaw = String(req.query.cpuBrand || "").toLowerCase();
+  const cpuBrand = ["intel", "amd"].includes(cpuBrandRaw) ? cpuBrandRaw : null;
+  const dualChannel = ["1", "true"].includes(String(req.query.dualChannel || "").toLowerCase());
+
+  const ramGbRaw = Number(req.query.ramGb);
+  const ramGb =
+    Number.isFinite(ramGbRaw) && ramGbRaw >= 4 && ramGbRaw <= 256 ? ramGbRaw : null;
+
+  const storageGbRaw = Number(req.query.storageGb);
+  const storageGb =
+    Number.isFinite(storageGbRaw) && storageGbRaw >= 60 && storageGbRaw <= 16000
+      ? storageGbRaw
+      : null;
 
   if (!Number.isFinite(budget) || budget < 500 || budget > 200000) {
     return res.status(400).json({
@@ -59,7 +72,13 @@ app.get("/api/build", async (req, res) => {
     ...new Set(results.flatMap((r) => r.failedStores || [])),
   ];
 
-  const { items, total, warnings } = buildConfiguration(budget, results, { gpuBrand });
+  const { items, total, warnings } = buildConfiguration(budget, results, {
+    gpuBrand,
+    cpuBrand,
+    ramGb,
+    dualChannel,
+    storageGb,
+  });
 
   if (items.every((i) => !i.product)) {
     return res.status(502).json({
@@ -72,6 +91,10 @@ app.get("/api/build", async (req, res) => {
     budget,
     profile,
     gpuBrand,
+    cpuBrand,
+    ramGb: ramGb ?? 16,
+    dualChannel,
+    storageGb,
     total,
     remaining: budget - total,
     items,
