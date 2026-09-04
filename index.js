@@ -6,6 +6,7 @@ const { fetchFromAllStores } = require("./stores");
 const { buildConfiguration } = require("./builder");
 const { CATEGORY_NAME_FILTERS, filterByCategory, filterByRelevance } = require("./categoryFilters");
 const { recordSnapshot, getHistory } = require("./priceHistory");
+const { computeBottleneck } = require("./bottleneck");
 const { ensureSchema, pool } = require("./db");
 
 const app = express();
@@ -157,6 +158,22 @@ app.get("/api/search", async (req, res) => {
       error: "Não foi possível buscar agora. Tente novamente em instantes.",
     });
   }
+});
+
+app.get("/api/bottleneck", (req, res) => {
+  const cpu = String(req.query.cpu || "").trim();
+  const gpu = String(req.query.gpu || "").trim();
+
+  if (!cpu || !gpu) {
+    return res
+      .status(400)
+      .json({ error: "Informe o processador e a placa de vídeo." });
+  }
+  if (cpu.length > 200 || gpu.length > 200) {
+    return res.status(400).json({ error: "Nome de peça muito longo." });
+  }
+
+  res.json(computeBottleneck(cpu, gpu));
 });
 
 app.get("/api/price-history", async (req, res) => {
