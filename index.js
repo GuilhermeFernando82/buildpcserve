@@ -42,6 +42,8 @@ app.get("/api/build", async (req, res) => {
       : null;
   const storageTypeRaw = String(req.query.storageType || "").toLowerCase();
   const storageType = ["nvme", "sata"].includes(storageTypeRaw) ? storageTypeRaw : null;
+  const ddrTypeRaw = String(req.query.ddrType || "").toLowerCase();
+  const ddrType = ["ddr4", "ddr5"].includes(ddrTypeRaw) ? ddrTypeRaw : null;
 
   if (!Number.isFinite(budget) || budget < 500 || budget > 200000) {
     return res.status(400).json({
@@ -83,6 +85,7 @@ app.get("/api/build", async (req, res) => {
     dualChannel,
     storageGb,
     storageType,
+    ddrType,
   });
 
   if (items.every((i) => !i.product)) {
@@ -101,6 +104,7 @@ app.get("/api/build", async (req, res) => {
     dualChannel,
     storageGb,
     storageType,
+    ddrType,
     total,
     remaining: budget - total,
     items,

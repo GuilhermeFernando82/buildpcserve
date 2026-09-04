@@ -193,27 +193,46 @@ function filterWithFallback(products, predicate, warnings, warningMsg) {
   return products;
 }
 
-function computeMotherboardCandidates(raw, cpuProduct, warnings) {
-  if (!cpuProduct) return raw;
-  const socket = detectSocket(cpuProduct.name);
-  if (socket) {
-    return filterWithFallback(
-      raw,
-      (p) => detectSocket(p.name) === socket,
+function computeMotherboardCandidates(raw, cpuProduct, warnings, ddrType) {
+  let candidates = raw;
+
+  if (cpuProduct) {
+    const socket = detectSocket(cpuProduct.name);
+    if (socket) {
+      candidates = filterWithFallback(
+        candidates,
+        (p) => detectSocket(p.name) === socket,
+        warnings,
+        `Não encontramos placa-mãe com soquete ${socket} (compatível com o processador escolhido); exibindo outras opções.`
+      );
+    } else {
+      const brand = detectCpuBrand(cpuProduct.name);
+      if (brand) {
+        candidates = filterWithFallback(
+          candidates,
+          (p) => detectCpuBrand(p.name) === brand,
+          warnings,
+          `Não encontramos placa-mãe compatível com processadores ${brand}; exibindo outras opções.`
+        );
+      }
+    }
+  }
+
+  if (ddrType) {
+    // Nem toda plataforma tem placa nos dois tipos (AM5 é DDR5 só, AM4 é
+    // DDR4 só) — se pedir um DDR incompatível com o socket já escolhido,
+    // o fallback do filterWithFallback mantém as opções que existem de
+    // verdade, com aviso, em vez de ficar sem nenhuma placa-mãe.
+    const label = ddrType.toUpperCase();
+    candidates = filterWithFallback(
+      candidates,
+      (p) => detectDdr(p.name) === label,
       warnings,
-      `Não encontramos placa-mãe com soquete ${socket} (compatível com o processador escolhido); exibindo outras opções.`
+      `Não encontramos placa-mãe ${label} compatível com o processador escolhido; exibindo outras opções.`
     );
   }
-  const brand = detectCpuBrand(cpuProduct.name);
-  if (brand) {
-    return filterWithFallback(
-      raw,
-      (p) => detectCpuBrand(p.name) === brand,
-      warnings,
-      `Não encontramos placa-mãe compatível com processadores ${brand}; exibindo outras opções.`
-    );
-  }
-  return raw;
+
+  return candidates;
 }
 
 function extractRamCapacityGb(name) {
@@ -420,6 +439,7 @@ function buildConfiguration(budget, categoryResults, options = {}) {
     dualChannel = false, // exige pentes em pares (2 ou 4)
     storageGb = null, // capacidade mínima de SSD desejada
     storageType = null, // "nvme" | "sata" | null (qualquer)
+    ddrType = null, // "ddr4" | "ddr5" | null (qualquer)
   } = options;
   const rawByKey = {};
   const pctByKey = {};
@@ -459,8 +479,11 @@ function buildConfiguration(budget, categoryResults, options = {}) {
   // DDR4 tem um piso de preço de pente bem mais baixo que DDR5 (~R$300 vs
   // ~R$900). Preferir placa-mãe DDR4 quando o preço for parecido evita que
   // a plataforma escolhida "imponha" um gasto bem maior em RAM mais adiante
-  // (ver pickClosestByPrice).
-  const preferDdr4 = (p) => detectDdr(p.name) === "DDR4";
+  // (ver pickClosestByPrice). Só faz sentido como viés "leve" quando o
+  // usuário não escolheu um tipo de DDR explicitamente — nesse caso o
+  // filtro em computeMotherboardCandidates já decide, e um viés pro DDR4
+  // por cima só atrapalharia uma escolha explícita de DDR5.
+  const preferDdr4 = ddrType ? null : (p) => detectDdr(p.name) === "DDR4";
 
   // Ao reencaixar uma categoria dependente (placa-mãe/RAM/fonte) depois de
   // uma troca de CPU/GPU, usa o preço anterior como alvo — mas nunca acima
@@ -478,7 +501,7 @@ function buildConfiguration(budget, categoryResults, options = {}) {
   function refreshFromCpu() {
     if (rawByKey.motherboard) {
       const prevPrice = selection.motherboard?.price;
-      const candidates = computeMotherboardCandidates(rawByKey.motherboard, selection.cpu, warnings);
+      const candidates = computeMotherboardCandidates(rawByKey.motherboard, selection.cpu, warnings, ddrType);
       const sorted = [...candidates].sort((a, b) => a.price - b.price);
       setCategory("motherboard", sorted, cappedTarget("motherboard", prevPrice), preferDdr4);
       refreshFromMotherboard();
@@ -659,7 +682,12 @@ function buildConfiguration(budget, categoryResults, options = {}) {
   return {
     items,
     total: total(),
-    warnings,
+    // As passadas de ajuste (downgrade/upgrade) testam várias combinações
+    // de CPU/placa-mãe internamente, então o mesmo aviso de incompatibilidade
+    // pode ser empurrado várias vezes até o algoritmo convergir numa opção
+    // válida — sem isso, o usuário via a mesma mensagem repetida dezenas de
+    // vezes.
+    warnings: [...new Set(warnings)],
   };
 }
 
