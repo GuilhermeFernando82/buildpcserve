@@ -55,6 +55,41 @@ rodar o frontend apontando pra cá.
 A tag da imagem no `Dockerfile` (`v1.62.1-noble`) precisa bater com a versão
 do pacote `playwright` no `package.json`. Se atualizar um, atualize o outro.
 
+## Links de afiliado
+
+Os links de produto passam por `affiliate.js`, que acrescenta o código de
+parceiro antes de o link chegar no usuário. Cada loja é ligada por uma variável
+de ambiente — sem ela, o link sai exatamente como veio da loja. Os códigos
+ficam só no ambiente, nunca no repositório.
+
+| Variável | Loja |
+| --- | --- |
+| `AFFILIATE_KABUM` | Kabum |
+| `AFFILIATE_TERABYTE` | Terabyte |
+| `AFFILIATE_PATOLOCO` | Pato Loco |
+
+Três formatos, conforme o que o programa fornecer:
+
+- `param:<nome>:<valor>` — acrescenta um parâmetro na URL do produto. É o caso
+  dos programas próprios das lojas e o da Amazon.
+  Ex.: `param:ref:guilherme123`
+- `awin:<awinmid>:<awinaffid>` — deep link da Awin, que intermedia várias lojas
+  brasileiras. Os dois ids aparecem no painel da Awin.
+  Ex.: `awin:12345:987654`
+- `template:<url>` — para qualquer outra rede: cole o modelo de deep link do
+  painel dela, com `{encoded}` onde entra a URL do produto (ou `{url}`, se
+  aquela rede não pedir encode).
+  Ex.: `template:https://redir.rede.com/?u={encoded}&id=42`
+
+Com pelo menos uma configurada, `/api/health` passa a responder
+`"affiliate": true` e o frontend exibe automaticamente o aviso de link
+patrocinado — exigido pelos programas e pelo CONAR.
+
+Uma variável com formato inválido é ignorada com aviso no log, para um erro de
+digitação não virar link sem comissão silenciosamente. O `id` usado no
+histórico de preço vem sempre da URL limpa, então ligar ou trocar o código de
+afiliado não reinicia o histórico dos produtos.
+
 ## Sobre Pichau e Shopee (não incluídas)
 
 - **Pichau**: também usa Cloudflare, mas com detecção de bot mais agressiva

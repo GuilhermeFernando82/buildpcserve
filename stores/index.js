@@ -1,6 +1,7 @@
 const kabum = require("../kabum");
 const terabyte = require("./terabyte");
 const patoloco = require("./patoloco");
+const { withAffiliate } = require("../affiliate");
 
 // Pichau não entrou: o site detecta o Chromium headless (mesmo com patches
 // de stealth em navigator.webdriver/plugins/chrome) e serve uma página de
@@ -32,9 +33,18 @@ async function fetchFromAllStores(term) {
   results.forEach((result, i) => {
     const store = STORES[i];
     if (result.status === "fulfilled") {
-      // id único entre lojas: nem toda loja expõe um código de produto, mas
-      // a URL sempre serve como chave estável.
-      products.push(...result.value.map((p) => ({ ...p, id: `${p.store}:${p.url}` })));
+      products.push(
+        ...result.value.map((p) => ({
+          ...p,
+          // id único entre lojas: nem toda loja expõe um código de produto,
+          // mas a URL sempre serve como chave estável. Vem da URL LIMPA, de
+          // propósito: o histórico de preço é indexado por ele, e ligar ou
+          // trocar o código de afiliado não pode reiniciar o histórico do
+          // produto do zero.
+          id: `${p.store}:${p.url}`,
+          url: withAffiliate(p.url, store.id),
+        }))
+      );
     } else {
       failedStores.push(store.label);
       console.error(`Erro ao buscar em ${store.label} (termo "${term}"):`, result.reason?.message);

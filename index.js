@@ -8,6 +8,7 @@ const { CATEGORY_NAME_FILTERS, filterByCategory, filterByRelevance } = require("
 const { recordSnapshot, getHistory } = require("./priceHistory");
 const { computeBottleneck } = require("./bottleneck");
 const { ensureSchema, pool } = require("./db");
+const { isAffiliateActive } = require("./affiliate");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -20,7 +21,13 @@ app.use(cors(corsOrigin ? { origin: corsOrigin.split(",") } : {}));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, priceHistoryStorage: pool ? "postgres" : "memory" });
+  res.json({
+    ok: true,
+    priceHistoryStorage: pool ? "postgres" : "memory",
+    // A UI usa isso pra só mostrar o aviso de link de afiliado quando algum
+    // programa estiver de fato configurado.
+    affiliate: isAffiliateActive(),
+  });
 });
 
 app.get("/api/build", async (req, res) => {
