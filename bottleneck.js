@@ -16,8 +16,10 @@
 //     é proporcional aos pixels. Na média das reviews, 1440p entrega ~70% do
 //     FPS de 1080p e 4K ~42%, na mesma GPU.
 //
-// Daí sai o efeito conhecido: em 1080p costuma sobrar GPU e faltar CPU
-// (gargalo de CPU), e em 4K acontece o contrário (gargalo de GPU).
+// Daí sai o efeito conhecido: o gargalo de processador é maior em 1080p (onde
+// a placa entregaria muito mais FPS do que a CPU consegue alimentar) e vai
+// sumindo conforme a resolução sobe, porque em 4K a própria placa passa a ser
+// o limite — e aí não há potencial desperdiçado.
 
 // Referência: RTX 5090 = 100. Mais específico antes do mais genérico — a
 // lista é testada em ordem e o primeiro padrão que bater vence (senão
@@ -227,9 +229,14 @@ function gpuFpsCeiling(score, factor) {
   return (40 + score * 3.6) * factor;
 }
 
-// Abaixo disso a diferença entre os dois tetos está dentro da margem de erro
-// de uma estimativa por modelo — não faz sentido apontar culpado.
-const BALANCED_THRESHOLD = 8;
+// Gargalo aqui é sempre o do PROCESSADOR — é o único que representa
+// desperdício. Quando a placa de vídeo é a peça mais lenta, ela está sendo
+// 100% usada, que é justamente o cenário ideal em jogos: não há potencial
+// jogado fora, o FPS é simplesmente o que aquela placa entrega. Chamar isso
+// de "gargalo da GPU" faria um PC bem montado parecer pior em 4K, quando na
+// prática é o contrário: quanto maior a resolução, menos a CPU atrapalha.
+const CPU_BOTTLENECK_HIGH = 20; // desperdício relevante
+const CPU_BOTTLENECK_MILD = 10; // perceptível, mas pequeno
 
 function computeBottleneck(cpuName, gpuName) {
   const cpu = scoreFor(CPU_SCORE_TABLE, cpuName);
@@ -239,24 +246,38 @@ function computeBottleneck(cpuName, gpuName) {
 
   const byResolution = RESOLUTIONS.map(({ key, label, gpuFactor }) => {
     const gpuCeiling = gpuFpsCeiling(gpu.score, gpuFactor);
-    const higher = Math.max(cpuCeiling, gpuCeiling);
-    const lower = Math.min(cpuCeiling, gpuCeiling);
-    const bottleneckPercent = Math.round(((higher - lower) / higher) * 100);
+
+    // Quanto do potencial da placa de vídeo se perde porque o processador não
+    // acompanha. Zero quando a placa é a peça mais lenta.
+    const cpuBottleneck =
+      gpuCeiling > cpuCeiling
+        ? Math.round(((gpuCeiling - cpuCeiling) / gpuCeiling) * 100)
+        : 0;
+
+    // Folga do processador: quanto de FPS a mais ele ainda aguentaria se a
+    // placa fosse mais forte — dá pra saber se compensa trocar só a GPU.
+    const cpuHeadroom =
+      cpuCeiling > gpuCeiling
+        ? Math.round(((cpuCeiling - gpuCeiling) / gpuCeiling) * 100)
+        : 0;
 
     return {
       key,
       label,
       // A peça mais lenta é quem dita o FPS — a outra fica esperando.
-      estimatedFps: Math.round(lower),
+      estimatedFps: Math.round(Math.min(cpuCeiling, gpuCeiling)),
       cpuCeiling: Math.round(cpuCeiling),
       gpuCeiling: Math.round(gpuCeiling),
-      bottleneckPercent,
-      limitedBy:
-        bottleneckPercent < BALANCED_THRESHOLD
-          ? "balanced"
-          : cpuCeiling < gpuCeiling
-            ? "cpu"
-            : "gpu",
+      cpuBottleneck,
+      cpuHeadroom,
+      verdict:
+        cpuBottleneck >= CPU_BOTTLENECK_HIGH
+          ? "cpu-high"
+          : cpuBottleneck >= CPU_BOTTLENECK_MILD
+            ? "cpu-mild"
+            : cpuBottleneck > 0
+              ? "balanced"
+              : "gpu-bound",
     };
   });
 
