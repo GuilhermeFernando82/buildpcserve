@@ -55,6 +55,31 @@ rodar o frontend apontando pra cá.
 A tag da imagem no `Dockerfile` (`v1.62.1-noble`) precisa bater com a versão
 do pacote `playwright` no `package.json`. Se atualizar um, atualize o outro.
 
+## Conferência de preço na página do produto
+
+A listagem de busca das lojas às vezes serve dado velho. Na Terabyte dá para
+ver: depois que um produto esgota, a busca continua devolvendo o último preço
+e `estoque=1`, e o card fica idêntico ao de um produto disponível — não há como
+perceber pela listagem.
+
+Por isso `productPage.js` confere preço e estoque na página de cada peça que a
+montagem escolheu (só as ~8, o pool inteiro seria inviável). Peça esgotada sai
+do páreo, preço errado é corrigido, e a montagem é refeita — até duas vezes,
+já que uma peça mais cara ou ausente muda o que cabe no orçamento.
+
+Cada loja tem um caminho próprio: Kabum e Pato Loco respondem a HTTP comum, a
+Terabyte só pelo navegador do Playwright (responde 403 ao resto). Vale notar
+duas armadilhas encontradas ali, ambas silenciosas:
+
+- `availability` do JSON-LD da Terabyte diz `InStock` mesmo em produto
+  esgotado. O sinal confiável é o bloco `.prodEsgPreco` estar **visível**.
+- Reaproveitar uma aba para várias páginas dela parece funcionar, mas da
+  terceira navegação em diante o site devolve página sem dados, sem erro. Cada
+  conferência abre seu próprio contexto por causa disso.
+
+Os resultados ficam em cache por 10 minutos, então montagens seguidas não
+repetem o trabalho.
+
 ## Links de afiliado
 
 Os links de produto passam por `affiliate.js`, que acrescenta o código de

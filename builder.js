@@ -255,6 +255,11 @@ function toRamPackage(p, quantity) {
   return {
     ...p,
     id: `${p.id}:x${quantity}`,
+    // O pacote é um item sintético (N unidades do mesmo anúncio), então o id
+    // dele não existe na lista de produtos da loja. `sourceId` guarda o
+    // anúncio de origem, para quem precisa voltar ao produto real — é o caso
+    // da conferência de preço na página (ver buildVerified em index.js).
+    sourceId: p.id,
     price: p.price * quantity,
     unitPrice: p.price,
     quantity,

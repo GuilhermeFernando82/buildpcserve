@@ -9,6 +9,7 @@ const { recordSnapshot, getHistory } = require("./priceHistory");
 const { computeBottleneck } = require("./bottleneck");
 const { ensureSchema, pool } = require("./db");
 const { isAffiliateActive } = require("./affiliate");
+const { verifyProducts } = require("./productPage");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -29,6 +30,67 @@ app.get("/api/health", (_req, res) => {
     affiliate: isAffiliateActive(),
   });
 });
+
+// Quantas vezes vale remontar depois de descobrir preço/estoque errado nas
+// peças escolhidas. Duas resolve os casos reais: a primeira troca o item com
+// problema, a segunda confirma o substituto. Mais que isso só somaria espera.
+const MAX_VERIFY_ROUNDS = 2;
+
+// Monta a configuração conferindo, na página de cada peça escolhida, se o
+// preço e o estoque da listagem ainda valem (ver productPage.js). Peça
+// esgotada sai do páreo e preço errado é corrigido; nos dois casos a montagem
+// é refeita, já que uma peça mais cara ou ausente muda o que cabe no
+// orçamento. Só as ~8 peças escolhidas são conferidas — o pool inteiro seria
+// inviável.
+async function buildVerified(budget, categoryResults, options) {
+  let pools = categoryResults;
+  let build = buildConfiguration(budget, pools, options);
+
+  // Guarda o que já foi conferido entre as rodadas: um item reescolhido na
+  // remontagem não precisa de nova requisição. A chave é o anúncio de origem,
+  // porque a RAM pode vir embrulhada em um pacote de N unidades, com id e
+  // preço próprios (ver toRamPackage) — o que se confere na loja é sempre o
+  // anúncio, com o preço de uma unidade.
+  const checked = new Map();
+  const originId = (p) => p.sourceId || p.id;
+  const unitPrice = (p) => p.unitPrice ?? p.price;
+
+  for (let round = 0; round < MAX_VERIFY_ROUNDS; round++) {
+    const chosen = build.items.map((i) => i.product).filter(Boolean);
+    const pending = chosen.filter((p) => !checked.has(originId(p)));
+
+    const results = await verifyProducts(pending);
+    // Registra também os que não deram retorno, como null, pra não tentar de
+    // novo o mesmo produto na próxima rodada.
+    for (const product of pending) {
+      checked.set(originId(product), results.get(product) || null);
+    }
+
+    const soldOut = new Set();
+    const priceFixes = new Map();
+    for (const product of chosen) {
+      const check = checked.get(originId(product));
+      if (!check) continue; // não deu para conferir: mantém o dado da busca
+      if (check.available === false) soldOut.add(originId(product));
+      else if (Math.abs(check.price - unitPrice(product)) > 0.01) {
+        priceFixes.set(originId(product), check.price);
+      }
+    }
+
+    if (!soldOut.size && !priceFixes.size) break; // listagem confere
+
+    pools = pools.map((cat) => ({
+      ...cat,
+      products: cat.products
+        .filter((p) => !soldOut.has(p.id))
+        .map((p) => (priceFixes.has(p.id) ? { ...p, price: priceFixes.get(p.id) } : p)),
+    }));
+
+    build = buildConfiguration(budget, pools, options);
+  }
+
+  return build;
+}
 
 app.get("/api/build", async (req, res) => {
   const budget = Number(req.query.budget);
@@ -86,7 +148,7 @@ app.get("/api/build", async (req, res) => {
     ...new Set(results.flatMap((r) => r.failedStores || [])),
   ];
 
-  const { items, total, warnings } = buildConfiguration(budget, results, {
+  const { items, total, warnings } = await buildVerified(budget, results, {
     gpuBrand,
     cpuBrand,
     ramGb,
