@@ -95,6 +95,29 @@ function extractTotalPages(nextData) {
   return 1;
 }
 
+// Preço válido de um produto da Kabum.
+//
+// Produto em promoção carrega DOIS conjuntos de preço: os campos da raiz, que
+// são o preço cheio de tabela, e um objeto `offer` aninhado com o preço da
+// promoção — que é o que a página realmente cobra. Ler só a raiz mostrava,
+// por exemplo, R$ 3.701,00 numa RTX 5060 anunciada por R$ 2.799,99.
+//
+// Dentro de cada conjunto, `priceWithDiscount` é o valor à vista (PIX/boleto)
+// e `price` é o "de", riscado no site.
+function extractPrices(p) {
+  const offer = p.offer && p.offer.priceWithDiscount > 0 ? p.offer : null;
+  const source = offer || p;
+
+  const price = source.priceWithDiscount > 0 ? source.priceWithDiscount : source.price;
+
+  // Arredonda pra centavos: um dos formatos de página da Kabum serializa os
+  // preços com precisão de float32, e "3294.110107421875" acabaria aparecendo
+  // como valor de produto.
+  const toCents = (v) => Math.round((Number(v) || 0) * 100) / 100;
+
+  return { price: toCents(price), originalPrice: toCents(source.price) };
+}
+
 function mapProducts(rawProducts) {
   const byCode = new Map();
   for (const p of rawProducts) {
@@ -104,13 +127,13 @@ function mapProducts(rawProducts) {
 
   return [...byCode.values()]
     .map((p) => {
-      const price = p.priceWithDiscount > 0 ? p.priceWithDiscount : p.price;
+      const { price, originalPrice } = extractPrices(p);
       return {
         code: p.code,
         name: p.name,
         brand: p.manufacturer?.name || "",
-        price: Number(price) || 0,
-        originalPrice: Number(p.price) || 0,
+        price,
+        originalPrice,
         available: !!p.available && (p.quantity ?? 0) > 0,
         rating: p.averageRating || 0,
         image: p.image || "",
